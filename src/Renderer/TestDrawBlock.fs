@@ -571,7 +571,7 @@ module HLPTick3 =
                 firstSample
                 (GenerateData.filter filterSymbolOverlap (gridPositionsRotationFlip))
                 makeTest7Circuit
-                (Asserts.failOnSampleNumber 200)
+                (Asserts.failOnWireIntersectsSymbol)
                 dispatch
             |> recordPositionInTest testNum dispatch 
 
