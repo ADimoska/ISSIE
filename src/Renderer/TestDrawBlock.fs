@@ -236,11 +236,43 @@ module HLPTick3 =
 
         // Rotate a symbol
         let rotateSymbol (symLabel: string) (rotate: Rotation) (model: SheetT.Model) : (SheetT.Model) =
-            failwithf "Not Implemented"
+            let componentMap = model.Wire.Symbol.Symbols
+
+            let findSymbolID map = 
+                map
+                |> Map.filter(fun _ (value:DrawModelType.SymbolT.Symbol) -> value.Component.Label = symLabel)
+
+            let compList = 
+                (findSymbolID componentMap) 
+                |> Map.toList 
+                |> List.map fst
+            
+            let rotmodel = {model with Wire = {model.Wire with Symbol = (RotateScale.rotateBlock compList model.Wire.Symbol rotate)}}
+
+            let newModel = {rotmodel with BoundingBoxes = Symbol.getBoundingBoxes rotmodel.Wire.Symbol}
+            
+            let errorComponents =
+                newModel.SelectedComponents
+                |> List.filter (fun sId -> not (Sheet.notIntersectingComponents newModel newModel.BoundingBoxes[sId] sId))
+            {newModel with ErrorComponents = errorComponents}
 
         // Flip a symbol
         let flipSymbol (symLabel: string) (flip: SymbolT.FlipType) (model: SheetT.Model) : (SheetT.Model) =
-            failwithf "Not Implemented"
+            let componentMap = model.Wire.Symbol.Symbols
+
+            let findSymbolID map = 
+                map|> Map.filter(fun _ (value:DrawModelType.SymbolT.Symbol) -> value.Component.Label = symLabel )
+
+            let compList = (findSymbolID componentMap) |> Map.toList |> List.map fst
+
+            let flipmodel = {model with Wire = {model.Wire with Symbol = ( RotateScale.flipBlock compList model.Wire.Symbol flip)}}
+
+            let newModel = {flipmodel with BoundingBoxes = Symbol.getBoundingBoxes flipmodel.Wire.Symbol}
+            
+            let errorComponents =
+                newModel.SelectedComponents
+                |> List.filter ( fun id -> not (Sheet.notIntersectingComponents newModel newModel.BoundingBoxes[id] id))
+            {newModel with ErrorComponents = errorComponents}
 
         /// Add a (newly routed) wire, source specifies the Output port, target the Input port.
         /// Return an error if either of the two ports specified is invalid, or if the wire duplicates and existing one.
@@ -333,12 +365,23 @@ module HLPTick3 =
            
 
     let gridPositions =
-        let xpositions = fromList [-100..20..100]
-        let ypositions = fromList [-100..20..100]
+        let xpositions = fromList [-100..10..100]
+        let ypositions = fromList [-100..10..100]
+        
         GenerateData.product (fun x y -> (x,y)) xpositions ypositions      
         |> map (fun (x, y) -> middleOfSheet + {X=float x; Y=float y})
 
-
+    let gridPositionsRotationFlip =
+        let xpositions = fromList [-100..1..100]
+        let ypositions = fromList [-100..1..100]
+        let rotations = fromList [Degree0; Degree90; Degree180; Degree270]
+        let flips  = fromList [SymbolT.FlipType.FlipHorizontal; SymbolT.FlipType.FlipVertical]
+        
+        GenerateData.product (fun x y -> (x,y)) xpositions ypositions      
+        |> map (fun (x, y) -> middleOfSheet + {X=float x; Y=float y})
+        |> map3 (fun rotation flip positions -> (positions,rotation, flip) ) rotations flips
+        
+   
 
 //my code ends 1 *************************************************************************************************************
     /// demo test circuit consisting of a DFF & And gate
@@ -350,6 +393,21 @@ module HLPTick3 =
         |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
         |> getOkOrFail
 
+    let makeTest7Circuit (data: XYPos * Rotation * SymbolT.FlipType) =
+        let andPos,rotation,flip= data
+        let currentRotate = rotateSymbol "G1" rotation
+        let currentRotateResult sheet = if true then Ok (currentRotate sheet) else Error "Impossible"
+        let currentFlip = flipSymbol "G1" flip
+        let currentFlipResult sheet = if true then Ok (currentFlip sheet) else Error "Impossible"
+        initSheetModel
+        |> placeSymbol "G1" (GateN(And,2)) andPos
+        |> Result.bind(currentRotateResult)
+        |> Result.bind(currentFlipResult)
+        |> Result.bind (placeSymbol "FF1" DFF middleOfSheet)
+        |> Result.bind (placeWire (portOf "G1" 0) (portOf "FF1" 0))
+        |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
+        |> getOkOrFail
+        
 
 
 //------------------------------------------------------------------------------------------------//
@@ -458,6 +516,7 @@ module HLPTick3 =
                 dispatch
             |> recordPositionInTest testNum dispatch
 //mytests ********************************************************************************************************
+        // test5 is fail on wire intersect test without filter 
         let test5 testNum firstSample dispatch =
             runTestOnSheets
                 "2D positioned AND + DFF: fail on wire intersect tests"
@@ -468,6 +527,7 @@ module HLPTick3 =
                 dispatch
             |> recordPositionInTest testNum dispatch
 
+        // test6 is fail on wire intersect test with a filter 
         let test6 testNum firstSample dispatch =
             
             let filterSymbolOverlap (pos: XYPos): bool =
@@ -492,6 +552,29 @@ module HLPTick3 =
                 dispatch
             |> recordPositionInTest testNum dispatch
 
+        //test7 is fail on wire intersect test with a filter + flip + rotation
+        let test7 testNum firstSample dispatch =
+            
+            let filterSymbolOverlap (data: XYPos*Rotation * SymbolT.FlipType) : bool =
+                let negate = not >> id
+                let sheet = makeTest7Circuit data
+                let boxes =
+                    mapValues sheet.BoundingBoxes
+                    |> Array.toList
+                    |> List.mapi (fun n box -> n,box)
+                List.allPairs boxes boxes
+                |> List.exists (fun ((n1,box1),(n2,box2))-> (n1 <> n2) && BlockHelpers.overlap2DBox box1 box2) 
+                |> negate
+            printfn "%A" (filter filterSymbolOverlap gridPositionsRotationFlip)
+            runTestOnSheets
+                "2D positioned AND + DFF: fail on wire intersect tests"
+                firstSample
+                (GenerateData.filter filterSymbolOverlap (gridPositionsRotationFlip))
+                makeTest7Circuit
+                (Asserts.failOnSampleNumber 200)
+                dispatch
+            |> recordPositionInTest testNum dispatch 
+
         /// List of tests available which can be run ftom Issie File Menu.
         /// The first 9 tests can also be run via Ctrl-n accelerator keys as shown on menu
         let testsToRunFromSheetMenu : (string * (int -> int -> Dispatch<Msg> -> Unit)) list =
@@ -504,7 +587,7 @@ module HLPTick3 =
                 "Test4", test4 
                 "Test5", test5 // dummy test - delete line or replace by real test as needed
                 "Test6", test6
-                "Test7", fun _ _ _ -> printf "Test7"
+                "Test7", test7
                 "Test8", fun _ _ _ -> printf "Test8"
                 "Next Test Error", fun _ _ _ -> printf "Next Error:" // Go to the nexterror in a test
 
